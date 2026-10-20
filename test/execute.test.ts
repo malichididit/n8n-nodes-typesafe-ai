@@ -67,7 +67,19 @@ function createFunctions(
 				}
 				return value;
 			},
-			helpers: { httpRequestWithAuthentication: request },
+			helpers: {
+				httpRequestWithAuthentication: request,
+				assertBinaryData: (itemIndex: number, propertyName: string) => {
+					const binary = items[itemIndex].binary?.[propertyName];
+					if (binary === undefined) {
+						throw new NodeOperationError(node, `No binary data in '${propertyName}'`);
+					}
+					return binary;
+				},
+				async getBinaryDataBuffer(itemIndex: number, propertyName: string) {
+					return Buffer.from(this.assertBinaryData(itemIndex, propertyName).data, 'base64');
+				},
+			},
 		} as unknown as IExecuteFunctions,
 	};
 }
@@ -534,6 +546,220 @@ describe('Evaluate', () => {
 		const outputs = await TypeSafeAi.prototype.execute.call(functions);
 
 		expect(outputs[0][0].json).toMatchObject({ ticket: 1, error: 'Server exploded' });
+	});
+});
+
+describe('Images', () => {
+	const PNG_BYTES = Buffer.from('fake png bytes');
+	const JPEG_BYTES = Buffer.from('fake jpeg bytes');
+
+	const imageItems: INodeExecutionData[] = [
+		{
+			json: { ticket: 1 },
+			binary: {
+				data: { data: PNG_BYTES.toString('base64'), mimeType: 'image/png', fileName: 'a.png' },
+				second: {
+					data: JPEG_BYTES.toString('base64'),
+					mimeType: 'image/jpeg',
+					fileName: 'b.jpg',
+				},
+				animation: { data: 'R0lG', mimeType: 'image/gif', fileName: 'c.gif' },
+				unnamed: { data: JPEG_BYTES.toString('base64'), mimeType: 'image/jpg' },
+				download: {
+					data: JPEG_BYTES.toString('base64'),
+					mimeType: 'application/octet-stream',
+					fileName: 'photo.bin',
+				},
+			},
+		},
+	];
+
+	const imageParameters: Record<string, unknown> = {
+		operation: 'evaluate',
+		model: { mode: 'list', value: 'jev-latest', cachedResultName: 'jev-latest' },
+		stateFormat: 'json',
+		stateJson: '{"photo": "photo-ref"}',
+		questionsFormat: 'fields',
+		'questions.question': [{ id: 'is_dog', instructions: 'Is `photo` a dog?', type: 'noul' }],
+		'images.image': [{ binaryPropertyName: 'data', reference: 'photo-ref' }],
+	};
+
+	const noulResponse = {
+		statusCode: 200,
+		body: { model: 'jev-1.13.0', answers: { is_dog: { type: 'noul', noul: 0.9 } } },
+	};
+
+	type SentOptions = { body: unknown; headers?: Record<string, string> };
+
+	async function send(parameters: Record<string, unknown>, response: unknown = noulResponse) {
+		const { functions, request } = createFunctions(parameters, imageItems, () => response);
+		await TypeSafeAi.prototype.execute.call(functions);
+		return (request.mock.calls[0] as unknown as [unknown, SentOptions])[1];
+	}
+
+	async function requestJson(form: FormData) {
+		return JSON.parse(await (form.get('request') as Blob).text()) as Record<string, unknown>;
+	}
+
+	it('sends the images as multipart parts named in the assets', async () => {
+		const options = await send(imageParameters);
+
+		expect(options.body).toBeInstanceOf(FormData);
+		const form = options.body as FormData;
+		expect([...form.keys()]).toEqual(['request', 'image-0']);
+		expect((form.get('request') as Blob).type).toBe('application/json');
+		expect(await requestJson(form)).toMatchObject({
+			state: { photo: 'photo-ref' },
+			assets: { 'photo-ref': { type: 'image', part: 'image-0' } },
+		});
+		const image = form.get('image-0') as File;
+		expect(image.type).toBe('image/png');
+		expect(image.name).toBe('a.png');
+		expect(Buffer.from(await image.arrayBuffer())).toEqual(PNG_BYTES);
+		expect(options.headers).toEqual({ 'TypeSafe-Danger-Zone-Images': 'true' });
+	});
+
+	it('sends plain JSON without the images header when there are no images', async () => {
+		const options = await send({ ...imageParameters, 'images.image': [] });
+
+		expect(options.body).toEqual(expect.objectContaining({ state: { photo: 'photo-ref' } }));
+		expect(options.body).not.toHaveProperty('assets');
+		expect(options.headers).toBeUndefined();
+	});
+
+	it('gives each image its own part', async () => {
+		const options = await send({
+			...imageParameters,
+			'questions.question': [
+				{ id: 'same_dog', instructions: 'Is `photo` the dog in poster-ref?', type: 'noul' },
+			],
+			'images.image': [
+				{ binaryPropertyName: 'data', reference: 'photo-ref' },
+				{ binaryPropertyName: 'second', reference: 'poster-ref' },
+			],
+		});
+
+		const form = options.body as FormData;
+		expect([...form.keys()]).toEqual(['request', 'image-0', 'image-1']);
+		expect((await requestJson(form)).assets).toEqual({
+			'photo-ref': { type: 'image', part: 'image-0' },
+			'poster-ref': { type: 'image', part: 'image-1' },
+		});
+		expect((form.get('image-1') as File).type).toBe('image/jpeg');
+	});
+
+	it('also sends images with Route, referenced in the instructions', async () => {
+		const options = await send(
+			{
+				...routeParameters,
+				routeInstructions: 'Which department handles the receipt in photo-ref?',
+				'images.image': [{ binaryPropertyName: 'data', reference: 'photo-ref' }],
+			},
+			choiceResponse('billing', 0.9),
+		);
+
+		expect(options.body).toBeInstanceOf(FormData);
+		expect((await requestJson(options.body as FormData)).assets).toEqual({
+			'photo-ref': { type: 'image', part: 'image-0' },
+		});
+	});
+
+	it('sends image/jpg as image/jpeg, named after its part when it has no file name', async () => {
+		const options = await send({
+			...imageParameters,
+			'images.image': [{ binaryPropertyName: 'unnamed', reference: 'photo-ref' }],
+		});
+
+		const image = (options.body as FormData).get('image-0') as File;
+		expect(image.type).toBe('image/jpeg');
+		expect(image.name).toBe('image-0');
+	});
+
+	it('sends application/octet-stream as is, for the API to check', async () => {
+		const options = await send({
+			...imageParameters,
+			'images.image': [{ binaryPropertyName: 'download', reference: 'photo-ref' }],
+		});
+
+		const image = (options.body as FormData).get('image-0') as File;
+		expect(image.type).toBe('application/octet-stream');
+		expect(Buffer.from(await image.arrayBuffer())).toEqual(JPEG_BYTES);
+	});
+
+	it('accepts a reference used only in criteria', async () => {
+		const options = await send({
+			...imageParameters,
+			questionsFormat: 'json',
+			questionsJson: JSON.stringify({
+				gesture: {
+					type: 'choice',
+					instructions: 'Which gesture is in `photo`?',
+					criteria: { thumbs_up: 'thumb-ref', none: 'No hand' },
+				},
+			}),
+			'images.image': [
+				{ binaryPropertyName: 'data', reference: 'photo-ref' },
+				{ binaryPropertyName: 'second', reference: 'thumb-ref' },
+			],
+		});
+
+		expect(options.body).toBeInstanceOf(FormData);
+	});
+
+	it('accepts a reference an expression resolved to a number', async () => {
+		const options = await send({
+			...imageParameters,
+			stateJson: '{"photo": "42"}',
+			'images.image': [{ binaryPropertyName: 'data', reference: 42 }],
+		});
+
+		expect((await requestJson(options.body as FormData)).assets).toEqual({
+			'42': { type: 'image', part: 'image-0' },
+		});
+	});
+
+	it.each([
+		[[{ binaryPropertyName: 'nope', reference: 'photo-ref' }], /No binary data in 'nope'/],
+		[[{ binaryPropertyName: 'animation', reference: 'gif-ref' }], /Only PNG and JPEG/],
+		[[{ binaryPropertyName: 'data', reference: '  ' }], /'Reference' is empty/],
+		[
+			[
+				{ binaryPropertyName: 'data', reference: 'same' },
+				{ binaryPropertyName: 'second', reference: 'same' },
+			],
+			/'Reference' "same" is used more than once/,
+		],
+		[
+			[{ binaryPropertyName: 'data', reference: 'unused-ref' }],
+			/'Reference' "unused-ref" does not appear/,
+		],
+	])('rejects %j before sending', async (entries, message) => {
+		const { functions, request } = createFunctions(
+			{ ...imageParameters, 'images.image': entries },
+			imageItems,
+			() => noulResponse,
+		);
+
+		await expect(TypeSafeAi.prototype.execute.call(functions)).rejects.toThrow(message);
+		expect(request).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['a key in the state', { stateJson: '{"photo-ref": "a photo"}' }, 'photo-ref'],
+		['part of the model name', {}, 'jev'],
+	])('rejects a reference that appears only as %s', async (_where, overrides, reference) => {
+		const { functions, request } = createFunctions(
+			{
+				...imageParameters,
+				...overrides,
+				'images.image': [{ binaryPropertyName: 'data', reference }],
+			},
+			imageItems,
+			() => noulResponse,
+		);
+
+		await expect(TypeSafeAi.prototype.execute.call(functions)).rejects.toThrow(/does not appear/);
+		expect(request).not.toHaveBeenCalled();
 	});
 });
 

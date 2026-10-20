@@ -38,6 +38,16 @@ Both operations send one request per input item. Each request includes the item'
 
 All the questions in a request are asked about the same state. The [State](https://docs.typesafe.ai/concepts/state) page covers how to structure it.
 
+**Images** adds PNG or JPEG images from the item's binary data. Give each image a **Reference**, and write that reference where the image belongs: in the state, in a question's instructions, or in its criteria. TypeSafe replaces the reference with the image. For example, with **State Format** set to JSON:
+
+| Field | Value |
+| --- | --- |
+| Images | Input Binary Field `data`, Reference `door-photo-7f3a` |
+| State | `{"door": "door-photo-7f3a"}` |
+| Instructions | ``Is there a person in `door`?`` |
+
+TypeSafe matches a reference anywhere in the text, even inside a word, so use one that can't occur by accident. Each image must be 280 to 1568 pixels on each side. Images are a preview feature of TypeSafe: the [Images](https://docs.typesafe.ai/images) page covers the limits and where an image can go.
+
 **Model** lists the models your API key can use. The [Models](https://docs.typesafe.ai/models) page describes each one and its aliases.
 
 ### Evaluate

@@ -211,6 +211,18 @@ object. The value MUST parse to an object or array.
 Both state fields carry the same label. Only one is ever visible, so the user
 always sees a single field called **State**.
 
+**Images** — optional, both operations, a list of entries. Each entry has:
+
+| Label | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| Input Binary Field | string, required | `data` | The input item's binary field that holds the image. |
+| Reference | string, required | — | The text that stands for the image. The user writes it in the state, instructions or criteria where the image belongs. |
+
+The image MUST be PNG or JPEG. A binary typed `application/octet-stream` MUST
+be sent as is, because n8n often labels a downloaded image that way and the API
+checks the bytes itself. The node MUST NOT check the image's size or pixel
+dimensions: the API enforces its own limits and its error is shown.
+
 ### 5.4 Questions — Evaluate only
 
 **Questions Format** — required, default **Using Fields Below**.
@@ -341,6 +353,17 @@ There MUST NOT be an option for renaming the output field. See §8.4.
 One request per input item, to `POST {host}/v1/systemone`, carrying exactly
 `state`, `model` and `questions`.
 
+Without **Images**, the request MUST be JSON, as above. With **Images**, the
+request MUST be `multipart/form-data` and carry the
+`TypeSafe-Danger-Zone-Images: true` header:
+
+- The first part is named `request`, has content type `application/json`, and
+  holds the JSON body plus an `assets` map.
+- Each image is one file part, named `image-0`, `image-1` and so on, in list
+  order, with the image's MIME type and file name. `image/jpg` is sent as
+  `image/jpeg`. Without a file name, the part name is used.
+- `assets` maps each **Reference** to `{ "type": "image", "part": "<part name>" }`.
+
 ### 6.1 Questions for Evaluate
 
 Each configured question becomes one entry in the `questions` map, keyed by its
@@ -380,6 +403,13 @@ before or instead of calling the API.
 Following n8n's UX guidelines, an error message MUST name the parameter at
 fault in single quotes, as in `'State' is empty`, and the error's description
 MUST say how to fix it where the message alone does not.
+
+For **Images**, the node MUST reject, without calling the API: a blank
+**Reference**, a **Reference** used by two entries, and an image that is not
+PNG or JPEG or typed `application/octet-stream`. A missing binary field MUST fail with n8n's own binary data error.
+A **Reference** that appears in no string value of the state or questions MUST
+be rejected too, because the API reports it only as "Invalid image request".
+Object keys do not count, because the API does not replace them.
 
 ---
 

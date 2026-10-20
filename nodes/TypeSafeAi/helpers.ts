@@ -19,6 +19,37 @@ export function fail(context: ItemContext, message: string, description?: string
 	});
 }
 
+function stringValues(value: unknown): string[] {
+	if (typeof value === 'string') {
+		return [value];
+	}
+	if (typeof value === 'object' && value !== null) {
+		return Object.values(value).flatMap(stringValues);
+	}
+	return [];
+}
+
+/**
+ * The API rejects an unused image with only "Invalid image request", so name it
+ * here. Like the API, this ignores object keys.
+ */
+export function assertReferencesUsed(
+	context: ItemContext,
+	references: string[],
+	body: IDataObject,
+): void {
+	const values = stringValues([body.state, body.questions]);
+	for (const reference of references) {
+		if (!values.some((value) => value.includes(reference))) {
+			fail(
+				context,
+				`'Reference' "${reference}" does not appear in the state, instructions or criteria`,
+				'Write the reference where the image belongs, or remove the image',
+			);
+		}
+	}
+}
+
 export interface CriteriaEntry {
 	name?: string;
 	description?: string;

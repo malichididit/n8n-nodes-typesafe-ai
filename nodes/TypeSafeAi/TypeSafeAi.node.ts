@@ -7,11 +7,12 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import type { Answer, ChoiceAnswer, NoulAnswer, ScoreAnswer } from './api';
+import type { Answer, ChoiceAnswer, ImagePart, NoulAnswer, ScoreAnswer } from './api';
 import { CREDENTIAL_NAME, evaluateState, searchModels } from './api';
 import { typeSafeAiProperties } from './descriptions';
 import type { CriteriaEntry, ItemContext, LevelEntry, QuestionEntry } from './helpers';
 import {
+	assertReferencesUsed,
 	buildCriteriaMap,
 	buildLevels,
 	buildNoulQuestion,
@@ -60,6 +61,73 @@ function buildState(
 		fail(context, "'State' is empty", 'Enter the content to evaluate');
 	}
 	return text;
+}
+
+const IMAGE_MIME_TYPES: Record<string, string> = {
+	'image/png': 'image/png',
+	'image/jpeg': 'image/jpeg',
+	'image/jpg': 'image/jpeg',
+	// n8n often labels a downloaded image this way. The API accepts it and
+	// checks the bytes itself.
+	'application/octet-stream': 'application/octet-stream',
+};
+
+/** All checks run before any image bytes are loaded, so a bad entry fails fast */
+async function readImages(
+	functions: IExecuteFunctions,
+	context: ItemContext,
+	body: IDataObject,
+): Promise<ImagePart[]> {
+	const { itemIndex } = context;
+	const entries = functions.getNodeParameter('images.image', itemIndex, []) as Array<{
+		binaryPropertyName: string;
+		reference: string;
+	}>;
+	const seen = new Set<string>();
+	const checked = entries.map((entry) => {
+		const reference = String(entry.reference ?? '').trim();
+		if (reference === '') {
+			fail(
+				context,
+				"'Reference' is empty",
+				'Enter the text that stands for the image in the state, instructions or criteria',
+			);
+		}
+		if (seen.has(reference)) {
+			fail(
+				context,
+				`'Reference' "${reference}" is used more than once`,
+				'Give each image its own reference',
+			);
+		}
+		seen.add(reference);
+		const binary = functions.helpers.assertBinaryData(itemIndex, entry.binaryPropertyName);
+		const mimeType = IMAGE_MIME_TYPES[binary.mimeType];
+		if (mimeType === undefined) {
+			fail(
+				context,
+				`Only PNG and JPEG images are supported, but '${entry.binaryPropertyName}' is ${binary.mimeType}`,
+				'Convert the image to PNG or JPEG before this node',
+			);
+		}
+		return {
+			reference,
+			binaryPropertyName: entry.binaryPropertyName,
+			mimeType,
+			fileName: binary.fileName,
+		};
+	});
+	assertReferencesUsed(
+		context,
+		checked.map(({ reference }) => reference),
+		body,
+	);
+	return await Promise.all(
+		checked.map(async ({ binaryPropertyName, ...image }) => ({
+			...image,
+			data: await functions.helpers.getBinaryDataBuffer(itemIndex, binaryPropertyName),
+		})),
+	);
 }
 
 function isNoulRoute(functions: IExecuteFunctions, itemIndex: number): boolean {
@@ -261,15 +329,17 @@ export class TypeSafeAi implements INodeType {
 			const item = items[itemIndex];
 			const context: ItemContext = { node, itemIndex };
 
+			const body = {
+				state: buildState(this, context, item),
+				model: this.getNodeParameter('model', itemIndex, '', { extractValue: true }) as string,
+				questions: buildQuestions(this, context, operation),
+			} as IDataObject;
 			const response = await evaluateState(
 				this,
 				itemIndex,
-				{
-					state: buildState(this, context, item),
-					model: this.getNodeParameter('model', itemIndex, '', { extractValue: true }) as string,
-					questions: buildQuestions(this, context, operation),
-				} as IDataObject,
+				body,
 				this.getNodeParameter('options.timeout', itemIndex, 5000) as number,
+				await readImages(this, context, body),
 			);
 
 			if (!isRoute) {

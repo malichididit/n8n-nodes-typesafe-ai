@@ -53,6 +53,13 @@ export interface ScoreAnswer {
 
 export type Answer = ChoiceAnswer | NoulAnswer | ScoreAnswer;
 
+export interface ImagePart {
+	reference: string;
+	mimeType: string;
+	fileName?: string;
+	data: Buffer;
+}
+
 export interface SystemOneResponse {
 	model: string;
 	answers: Record<string, Answer>;
@@ -86,7 +93,13 @@ export function describeApiError(body: unknown, statusCode: number): string {
 
 async function apiRequest(
 	context: IExecuteFunctions | ILoadOptionsFunctions,
-	options: { method: IHttpRequestMethods; path: string; body?: IDataObject; timeout?: number },
+	options: {
+		method: IHttpRequestMethods;
+		path: string;
+		body?: IDataObject | FormData;
+		headers?: IDataObject;
+		timeout?: number;
+	},
 	itemIndex?: number,
 ): Promise<unknown> {
 	const credentials = await context.getCredentials(CREDENTIAL_NAME);
@@ -96,7 +109,10 @@ async function apiRequest(
 		{
 			method: options.method,
 			url: `${resolveBaseUrl(credentials.baseUrl)}${options.path}`,
-			body: options.body,
+			// n8n types the body as the form-data package's FormData. A native one
+			// is passed through as is, and the HTTP client sets its multipart headers.
+			body: options.body as IDataObject,
+			headers: options.headers,
 			timeout: options.timeout,
 			json: true,
 			returnFullResponse: true,
@@ -121,13 +137,44 @@ export async function evaluateState(
 	itemIndex: number,
 	body: IDataObject,
 	timeout: number,
+	images: ImagePart[] = [],
 ): Promise<SystemOneResponse> {
+	const request =
+		images.length === 0
+			? { body }
+			: {
+					body: buildMultipartBody(body, images),
+					headers: { 'TypeSafe-Danger-Zone-Images': 'true' },
+				};
 	const response = await apiRequest(
 		context,
-		{ method: 'POST', path: '/v1/systemone', body, timeout },
+		{ method: 'POST', path: '/v1/systemone', ...request, timeout },
 		itemIndex,
 	);
 	return response as SystemOneResponse;
+}
+
+/** The API requires the JSON part, named `request`, to come first */
+function buildMultipartBody(body: IDataObject, images: ImagePart[]): FormData {
+	const partName = (index: number) => `image-${index}`;
+	const assets = Object.fromEntries(
+		images.map(({ reference }, index) => [reference, { type: 'image', part: partName(index) }]),
+	);
+	const form = new FormData();
+	form.append(
+		'request',
+		new Blob([JSON.stringify({ ...body, assets })], { type: 'application/json' }),
+	);
+	images.forEach(({ data, mimeType, fileName }, index) => {
+		// Blob takes an ArrayBuffer-backed view, which a Buffer is not typed as
+		const bytes = new Uint8Array(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
+		form.append(
+			partName(index),
+			new Blob([bytes], { type: mimeType }),
+			fileName ?? partName(index),
+		);
+	});
+	return form;
 }
 
 export async function searchModels(

@@ -270,6 +270,43 @@ export const typeSafeAiProperties: INodeProperties[] = [
 		placeholder: 'Add content for TypeSafe to evaluate',
 	},
 	{
+		displayName: 'Images',
+		name: 'images',
+		type: 'fixedCollection',
+		typeOptions: { multipleValues: true },
+		placeholder: 'Add Image',
+		default: {},
+		description:
+			"PNG or JPEG images from the input item. Write each image's reference in the state, instructions or criteria where the image belongs.",
+		options: [
+			{
+				name: 'image',
+				displayName: 'Image',
+				values: [
+					{
+						displayName: 'Input Binary Field',
+						name: 'binaryPropertyName',
+						type: 'string',
+						required: true,
+						default: 'data',
+						description: 'The name of the input binary field that holds the image',
+						hint: 'The image must be PNG or JPEG, 280 to 1568 pixels on each side',
+					},
+					{
+						displayName: 'Reference',
+						name: 'reference',
+						type: 'string',
+						required: true,
+						default: '',
+						description:
+							"The text that stands for this image. TypeSafe replaces it wherever it appears, even inside a word, so use text that can't occur by accident.",
+						placeholder: 'e.g. door-photo-7f3a',
+					},
+				],
+			},
+		],
+	},
+	{
 		displayName: 'Questions Format',
 		name: 'questionsFormat',
 		type: 'options',

@@ -4,6 +4,14 @@ All notable changes to this package are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Images.** Both operations can send PNG and JPEG images from the item's
+  binary data. Each image has a reference that the state, instructions or
+  criteria use to place it.
+
 ## 0.9.0
 
 Initial release.
